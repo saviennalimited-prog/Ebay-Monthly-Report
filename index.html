@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>eBay Monthly Report</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="upload-screen">
+
+<!-- UPLOAD PAGE -->
+<div id="uploadPage">
+  <div class="up-center">
+    <div class="up-logo">
+      <div class="logo-mark">eMR</div>
+      <h1>eBay Monthly Report</h1>
+      <p class="up-sub">Upload your two eBay exports and get your full financial dashboard instantly.</p>
+    </div>
+
+    <div class="up-cards">
+      <div class="up-card" id="txCard" onclick="document.getElementById('txInput').click()">
+        <div class="up-card-icon">📊</div>
+        <div class="up-card-body">
+          <div class="up-card-title">Transaction Report</div>
+          <div class="up-card-hint">Seller Hub → Payments → Reports</div>
+          <div class="up-card-status" id="txStatus">Click to upload CSV</div>
+        </div>
+        <input type="file" id="txInput" accept=".csv" style="display:none" onchange="fileSelected('tx', this)">
+      </div>
+
+      <div class="up-card" id="ordCard" onclick="document.getElementById('ordInput').click()">
+        <div class="up-card-icon">📦</div>
+        <div class="up-card-body">
+          <div class="up-card-title">Orders Report</div>
+          <div class="up-card-hint">Seller Hub → Reports → Orders</div>
+          <div class="up-card-status" id="ordStatus">Click to upload CSV</div>
+        </div>
+        <input type="file" id="ordInput" accept=".csv" style="display:none" onchange="fileSelected('ord', this)">
+      </div>
+    </div>
+
+    <button class="up-btn" id="processBtn" disabled onclick="processFiles()">
+      <span id="processBtnText">Upload both files to continue</span>
+    </button>
+
+    <div class="up-hint-box">
+      <strong>How to download from eBay each month:</strong><br>
+      1. Go to <em>Seller Hub → Payments → Reports</em> → Download Transaction Report (CSV)<br>
+      2. Go to <em>Seller Hub → Reports</em> → Download Orders Report (CSV, full month)
+    </div>
+  </div>
+</div>
+
+<!-- DASHBOARD PAGE (hidden until files processed) -->
+<div id="dashPage" style="display:none">
+
+  <header class="hdr">
+    <div class="hdr-l">
+      <div class="logo-sm">eMR</div>
+      <span class="hdr-title">eBay Monthly Report</span>
+      <span class="hdr-period" id="hdrPeriod">—</span>
+    </div>
+    <div class="hdr-r">
+      <button class="btn btn-ghost" onclick="goBack()">← New Report</button>
+      <button class="btn btn-pdf" onclick="printReport()">⬇ Save PDF</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" onclick="showTab('overview')">Overview</button>
+    <button class="tab" onclick="showTab('skus')">SKU Performance</button>
+    <button class="tab" onclick="showTab('costs')">Costs & Profit</button>
+    <button class="tab" onclick="showTab('expenses')">Expenses</button>
+  </nav>
+
+  <main class="dash-main" id="dashMain">
+    <!-- Rendered by JS -->
+  </main>
+
+</div>
+
+<script src="parser.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>
