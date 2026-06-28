@@ -1,6 +1,7 @@
 // ============================================================
-// parser.js  — eBay Monthly Report
-// Parses Transaction Report + Orders Report CSVs in-browser.
+// parser.js — eBay Monthly Report  (v3 - robust rewrite)
+// Parses eBay UK Transaction Report + Orders Report CSVs
+// entirely in the browser. No server required.
 // ============================================================
 
 const CABLE_KW = ['cable', 'lighting', '8 pin', '8-pin', 'c to c', 'cablez', 'otg'];
@@ -15,220 +16,241 @@ function inferPostage(sku, qty) {
   return (isCableSku(sku) && qty === 1) ? 'll' : 't48';
 }
 
-// ---- Robust CSV parser (handles quoted fields, commas, newlines) ----
-function parseCSV(text) {
-  // Normalise line endings
-  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const rows = [];
-  let cur = '', inQ = false, cells = [];
+// ---- Strip UTF-8 BOM if present ----
+function stripBOM(text) {
+  return text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+}
 
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
+// ---- Split one CSV line into cells (handles quoted commas) ----
+function splitLine(line) {
+  const cells = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
     if (c === '"') {
-      if (inQ && text[i+1] === '"') { cur += '"'; i++; } // escaped quote
+      // Handle escaped double-quote ""
+      if (inQ && line[i+1] === '"') { cur += '"'; i++; }
       else inQ = !inQ;
     } else if (c === ',' && !inQ) {
-      cells.push(cur.trim()); cur = '';
-    } else if (c === '\n' && !inQ) {
-      cells.push(cur.trim()); cur = '';
-      if (cells.some(v => v !== '')) rows.push(cells);
-      cells = [];
+      cells.push(cur.trim());
+      cur = '';
     } else {
       cur += c;
     }
   }
-  if (cur || cells.length) { cells.push(cur.trim()); if (cells.some(v => v !== '')) rows.push(cells); }
-  return rows;
+  cells.push(cur.trim());
+  return cells;
 }
 
 function toNum(v) {
-  if (v === undefined || v === null || v === '' || v === '--') return 0;
-  return parseFloat(String(v).replace(/[^0-9.\-]/g, '')) || 0;
+  if (!v || v === '--' || v === '') return 0;
+  const n = parseFloat(String(v).replace(/[^\d.\-]/g, ''));
+  return isNaN(n) ? 0 : n;
 }
 
-// ---- Parse "31 May 2026" or "01/05/2026 00:00:00 AM BST" → YYYY-MM-DD ----
-const MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+// ---- Parse eBay date "31 May 2026" → "2026-05-31" ----
+const MO = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
 
-function parseEbayDate(s) {
-  if (!s || s === '--') return null;
+function parseDate(s) {
+  if (!s || s === '--') return '';
   s = s.trim();
-
   // "31 May 2026"
-  const m1 = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
+  const m1 = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
   if (m1) {
-    const mo = MONTHS[m1[2].toLowerCase()];
+    const mo = MO[m1[2].toLowerCase()];
     if (mo !== undefined) {
-      const d = new Date(parseInt(m1[3]), mo, parseInt(m1[1]));
-      return d.toISOString().slice(0,10);
+      const yr = m1[3], day = m1[1].padStart(2,'0'), moS = String(mo+1).padStart(2,'0');
+      return `${yr}-${moS}-${day}`;
     }
   }
-
-  // "01/05/2026 ..." (DD/MM/YYYY or MM/DD/YYYY — eBay UK uses DD/MM)
+  // "01/05/2026" DD/MM/YYYY (UK eBay format)
   const m2 = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
-  if (m2) {
-    // Treat as DD/MM/YYYY for UK eBay
-    const d = new Date(parseInt(m2[3]), parseInt(m2[2])-1, parseInt(m2[1]));
-    return d.toISOString().slice(0,10);
-  }
-
-  // ISO
+  if (m2) return `${m2[3]}-${m2[2]}-${m2[1]}`;
+  // Already YYYY-MM-DD
   const m3 = s.match(/^(\d{4}-\d{2}-\d{2})/);
   if (m3) return m3[1];
-
-  return null;
+  return '';
 }
 
-// ---- Parse Transaction CSV ----
-// Structure: lines 0-10 are metadata/notes, line 11 is the header, line 12+ are data
-function parseTransactionCSV(text) {
-  const rows = parseCSV(text);
+// ---- Parse Transaction Report ----
+function parseTransactionCSV(rawText) {
+  const text = stripBOM(rawText);
+  const lines = text.split('\n').map(l => l.replace(/\r$/, ''));
 
-  // Find header row: contains "Transaction creation date"
+  console.log('[TX] Total lines:', lines.length);
+
+  // Find header line (contains "Transaction creation date")
   let headerIdx = -1;
-  for (let i = 0; i < Math.min(rows.length, 20); i++) {
-    if (rows[i].some(c => c.toLowerCase().includes('transaction creation date'))) {
-      headerIdx = i; break;
+  for (let i = 0; i < Math.min(lines.length, 20); i++) {
+    if (lines[i].toLowerCase().includes('transaction creation date')) {
+      headerIdx = i;
+      break;
     }
   }
-  if (headerIdx === -1) throw new Error('Could not find header row in Transaction CSV. Please make sure you uploaded the Transaction Report.');
+  if (headerIdx === -1) {
+    throw new Error('Transaction CSV: cannot find header row. Check you uploaded the correct file.');
+  }
+  console.log('[TX] Header at line:', headerIdx);
 
-  // Extract period from metadata rows (look for "Start date" / "End date")
-  let startDate = null, endDate = null;
+  // Extract period from metadata lines
+  let startDate = '', endDate = '';
   for (let i = 0; i < headerIdx; i++) {
-    const row = rows[i];
-    if (row[0] && row[0].toLowerCase().includes('start date') && row[1]) {
-      startDate = parseEbayDate(row[1].split(' ')[0] + ' ' + row[1].split(' ')[1] + ' ' + row[1].split(' ')[2]);
-      // fallback: parse "01/05/2026"
+    const cells = splitLine(lines[i]);
+    if (cells[0] && cells[0].toLowerCase().includes('start date') && cells[1]) {
+      startDate = parseDate(cells[1].split(' ').slice(0,3).join(' '));
       if (!startDate) {
-        const m = row[1].match(/(\d{2})\/(\d{2})\/(\d{4})/);
+        const m = cells[1].match(/(\d{2})\/(\d{2})\/(\d{4})/);
         if (m) startDate = `${m[3]}-${m[2]}-${m[1]}`;
       }
     }
-    if (row[0] && row[0].toLowerCase().includes('end date') && row[1]) {
-      const m = row[1].match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    if (cells[0] && cells[0].toLowerCase().includes('end date') && cells[1]) {
+      const m = cells[1].match(/(\d{2})\/(\d{2})\/(\d{4})/);
       if (m) endDate = `${m[3]}-${m[2]}-${m[1]}`;
     }
   }
+  console.log('[TX] Period:', startDate, '→', endDate);
 
-  const headers = rows[headerIdx].map(h => h.toLowerCase());
-  const ci = name => headers.findIndex(h => h.includes(name));
+  // Parse header to find column indices
+  const headers = splitLine(lines[headerIdx]).map(h => h.toLowerCase());
+  console.log('[TX] Header cols:', headers.length, '| First 5:', headers.slice(0,5));
 
-  const iDate    = ci('transaction creation date');
-  const iType    = ci('type');
-  const iOrder   = ci('order number');
-  const iTitle   = ci('item title');
-  const iSku     = ci('custom label');
-  const iQty     = ci('quantity');
-  const iSub     = ci('item subtotal');
-  const iGross   = ci('gross transaction amount');
-  const iNet     = ci('net amount');
-  const iFvfFix  = ci('final value fee – fixed');
-  const iFvfVar  = ci('final value fee – variable');
-  const iReg     = ci('regulatory operating fee');
-  const iDesc    = ci('description');
+  const ci = (name) => headers.findIndex(h => h.includes(name));
 
-  console.log('TX header cols found:', {iDate,iType,iOrder,iSku,iQty,iGross,iNet,iFvfFix,iFvfVar,iReg});
+  // Use column names that are safe (no special chars where possible)
+  const cols = {
+    date:     ci('transaction creation date'),
+    type:     ci('type'),
+    order:    ci('order number'),
+    title:    ci('item title'),
+    sku:      ci('custom label'),
+    qty:      ci('quantity'),
+    sub:      ci('item subtotal'),
+    gross:    ci('gross transaction amount'),
+    net:      ci('net amount'),
+    desc:     ci('description'),
+    reg:      ci('regulatory operating fee'),
+  };
+
+  // FVF columns: search more broadly since em-dash may vary
+  cols.fvfFixed = headers.findIndex(h => h.includes('final value fee') && h.includes('fixed'));
+  cols.fvfVar   = headers.findIndex(h => h.includes('final value fee') && h.includes('variable'));
+
+  console.log('[TX] Key cols:', JSON.stringify(cols));
 
   const data = { orders:[], refunds:[], claims:[], otherFees:[], adjustments:[], startDate, endDate };
 
-  for (let i = headerIdx + 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r || r.length < 3) continue;
-    const type = (r[iType] || '').trim();
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line === '--' || line.replace(/,/g,'').trim() === '') continue;
+
+    const r = splitLine(lines[i]);
+    const type = (r[cols.type] || '').trim();
     if (!type || type === '--') continue;
 
     const row = {
       type,
-      date: parseEbayDate(r[iDate]) || '',
-      orderNum: (r[iOrder] || '').trim(),
-      title:    (r[iTitle] || '').trim(),
-      sku:      (r[iSku]   || '').trim(),
-      qty:      Math.max(1, toNum(r[iQty])),
-      subtotal: toNum(r[iSub]),
-      gross:    toNum(r[iGross]),
-      net:      toNum(r[iNet]),
-      fvfFixed: toNum(r[iFvfFix]),
-      fvfVar:   toNum(r[iFvfVar]),
-      regFee:   toNum(r[iReg]),
-      desc:     (r[iDesc] || '').trim(),
+      date:     parseDate(r[cols.date]),
+      orderNum: (r[cols.order] || '').trim(),
+      title:    (r[cols.title] || '').trim(),
+      sku:      (r[cols.sku]   || '').trim(),
+      qty:      Math.max(1, toNum(r[cols.qty])),
+      subtotal: toNum(r[cols.sub]),
+      gross:    toNum(r[cols.gross]),
+      net:      toNum(r[cols.net]),
+      fvfFixed: toNum(r[cols.fvfFixed]),
+      fvfVar:   toNum(r[cols.fvfVar]),
+      regFee:   toNum(r[cols.reg]),
+      desc:     (r[cols.desc] || '').trim(),
     };
     row.totalFee = row.fvfFixed + row.fvfVar + row.regFee;
 
-    if (type === 'Order')     data.orders.push(row);
+    if      (type === 'Order')     data.orders.push(row);
     else if (type === 'Refund')    data.refunds.push(row);
     else if (type === 'Claim')     data.claims.push(row);
     else if (type === 'Other fee') data.otherFees.push(row);
     else if (type === 'Adjustment') data.adjustments.push(row);
   }
 
-  console.log(`TX parsed: ${data.orders.length} orders, ${data.refunds.length} refunds, ${data.claims.length} claims`);
+  console.log(`[TX] Parsed: ${data.orders.length} orders, ${data.refunds.length} refunds, ${data.claims.length} claims, ${data.otherFees.length} other fees`);
+
+  if (data.orders.length === 0) {
+    throw new Error(`Transaction CSV parsed but found 0 orders. Header was at line ${headerIdx}. Cols: ${JSON.stringify(cols)}. First data line: "${lines[headerIdx+1]}"`);
+  }
+
   return data;
 }
 
-// ---- Parse Orders CSV ----
-// Structure: line 0 is blank/junk, line 1 is header, line 2 is blank, line 3+ are data
-function parseOrdersCSV(text) {
-  const rows = parseCSV(text);
+// ---- Parse Orders Report ----
+function parseOrdersCSV(rawText) {
+  const text = stripBOM(rawText);
+  const lines = text.split('\n').map(l => l.replace(/\r$/, ''));
 
-  // Find header row: contains "order number"
+  console.log('[ORD] Total lines:', lines.length);
+
+  // Find header line
   let headerIdx = -1;
-  for (let i = 0; i < Math.min(rows.length, 5); i++) {
-    if (rows[i].some(c => c.toLowerCase().includes('order number'))) {
+  for (let i = 0; i < Math.min(lines.length, 5); i++) {
+    if (lines[i].toLowerCase().includes('order number')) {
       headerIdx = i; break;
     }
   }
-  if (headerIdx === -1) throw new Error('Could not find header row in Orders CSV. Please make sure you uploaded the Orders Report.');
+  if (headerIdx === -1) throw new Error('Orders CSV: cannot find header row.');
+  console.log('[ORD] Header at line:', headerIdx);
 
-  const headers = rows[headerIdx].map(h => h.toLowerCase());
-  const ci = name => headers.findIndex(h => h.includes(name));
+  const headers = splitLine(lines[headerIdx]).map(h => h.toLowerCase());
+  const ci = (name) => headers.findIndex(h => h.includes(name));
 
-  const iOrder    = ci('order number');
-  const iSku      = ci('custom label');
-  const iTitle    = ci('item title');
-  const iQty      = ci('quantity');
-  const iDelivery = ci('delivery service');
-  const iSaleDate = ci('sale date');
-  const iSoldFor  = ci('sold for');
+  const cols = {
+    order:    ci('order number'),
+    sku:      ci('custom label'),
+    title:    ci('item title'),
+    qty:      ci('quantity'),
+    delivery: ci('delivery service'),
+    saleDate: ci('sale date'),
+    soldFor:  ci('sold for'),
+  };
 
-  console.log('ORD header cols found:', {iOrder,iSku,iQty,iDelivery});
+  console.log('[ORD] Key cols:', JSON.stringify(cols));
 
   const orders = [];
-  for (let i = headerIdx + 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r || !r[iOrder] || !r[iOrder].trim()) continue;
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.replace(/,/g,'').trim() === '') continue;
+    const r = splitLine(lines[i]);
+    const orderNum = (r[cols.order] || '').trim();
+    if (!orderNum) continue;
     orders.push({
-      orderNum: r[iOrder].trim(),
-      sku:      (r[iSku]      || '').trim(),
-      title:    (r[iTitle]    || '').trim(),
-      qty:      Math.max(1, toNum(r[iQty]) || 1),
-      delivery: (r[iDelivery] || '').trim(),
-      saleDate: parseEbayDate(r[iSaleDate]) || '',
-      soldFor:  toNum(r[iSoldFor]),
+      orderNum,
+      sku:      (r[cols.sku]      || '').trim(),
+      title:    (r[cols.title]    || '').trim(),
+      qty:      Math.max(1, toNum(r[cols.qty]) || 1),
+      delivery: (r[cols.delivery] || '').trim(),
+      saleDate: parseDate(r[cols.saleDate]) || '',
+      soldFor:  toNum(r[cols.soldFor]),
     });
   }
 
-  console.log(`ORD parsed: ${orders.length} orders`);
+  console.log(`[ORD] Parsed: ${orders.length} orders`);
   return orders;
 }
 
-// ---- Format period label from dates ----
-function formatPeriod(startDate, endDate, orders) {
-  // Try from metadata first
+// ---- Format period label ----
+function formatPeriod(startDate, txOrders) {
+  const MONAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   if (startDate) {
-    const d = new Date(startDate);
-    const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    return MO[d.getMonth()] + ' ' + d.getFullYear();
+    const d = new Date(startDate + 'T12:00:00Z');
+    if (!isNaN(d)) return MONAMES[d.getUTCMonth()] + ' ' + d.getUTCFullYear();
   }
-  // Fall back to order dates
-  const dates = orders.map(o => o.date).filter(Boolean).sort();
+  // Fallback: use order dates
+  const dates = txOrders.map(o => o.date).filter(Boolean).sort();
   if (dates.length) {
-    const first = new Date(dates[0]);
-    const last  = new Date(dates[dates.length-1]);
-    const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    if (first.getMonth() === last.getMonth() && first.getFullYear() === last.getFullYear()) {
-      return MO[first.getMonth()] + ' ' + first.getFullYear();
+    const first = new Date(dates[0] + 'T12:00:00Z');
+    const last  = new Date(dates[dates.length-1] + 'T12:00:00Z');
+    if (!isNaN(first)) {
+      const mo = MONAMES[first.getUTCMonth()], yr = first.getUTCFullYear();
+      if (first.getUTCMonth() === last.getUTCMonth()) return mo + ' ' + yr;
+      return mo + '–' + MONAMES[last.getUTCMonth()] + ' ' + yr;
     }
-    return MO[first.getMonth()] + '–' + MO[last.getMonth()] + ' ' + last.getFullYear();
   }
   return 'Unknown period';
 }
@@ -238,29 +260,34 @@ function crunchData(txText, ordText) {
   const tx  = parseTransactionCSV(txText);
   const ord = parseOrdersCSV(ordText);
 
-  const period = formatPeriod(tx.startDate, tx.endDate, tx.orders);
+  const period = formatPeriod(tx.startDate, tx.orders);
+  console.log('[CRUNCH] Period:', period, '| Orders:', tx.orders.length);
 
-  // Metrics
-  const grossSales    = tx.orders.reduce((s,o) => s + o.gross, 0);
-  const netRevenue    = tx.orders.reduce((s,o) => s + o.net,   0);
-  const totalUnits    = tx.orders.reduce((s,o) => s + o.qty,   0);
-  const totalFvfFixed = tx.orders.reduce((s,o) => s + o.fvfFixed, 0);
-  const totalFvfVar   = tx.orders.reduce((s,o) => s + o.fvfVar,   0);
-  const totalRegFee   = tx.orders.reduce((s,o) => s + o.regFee,   0);
+  const sum = (arr, fn) => arr.reduce((s, o) => s + fn(o), 0);
+
+  const grossSales    = sum(tx.orders, o => o.gross);
+  const netRevenue    = sum(tx.orders, o => o.net);
+  const totalUnits    = sum(tx.orders, o => o.qty);
+  const totalFvfFixed = sum(tx.orders, o => o.fvfFixed);
+  const totalFvfVar   = sum(tx.orders, o => o.fvfVar);
+  const totalRegFee   = sum(tx.orders, o => o.regFee);
   const totalFees     = totalFvfFixed + totalFvfVar + totalRegFee;
-  const refundTotal   = tx.refunds.reduce((s,r)    => s + r.net, 0);
-  const claimTotal    = tx.claims.reduce((s,c)     => s + c.net, 0);
-  const adjTotal      = tx.adjustments.reduce((s,a) => s + a.net, 0);
-  const otherFeeTotal = tx.otherFees.reduce((s,f)  => s + f.net, 0);
+  const refundTotal   = sum(tx.refunds, r => r.net);
+  const claimTotal    = sum(tx.claims,  c => c.net);
+  const adjTotal      = sum(tx.adjustments, a => a.net);
+  const otherFeeTotal = sum(tx.otherFees,   f => f.net);
 
-  const promotedFees = tx.otherFees
-    .filter(f => f.desc.toLowerCase().includes('promoted') || f.desc.toLowerCase().includes('ad fee'))
-    .reduce((s,f) => s + f.net, 0);
+  const promotedFees  = sum(
+    tx.otherFees.filter(f => f.desc.toLowerCase().includes('promoted') || f.desc.toLowerCase().includes('ad fee')),
+    f => f.net
+  );
 
   const uniqueOrders = new Set(tx.orders.map(o => o.orderNum)).size;
   const payout = grossSales + refundTotal + claimTotal + totalFees + otherFeeTotal + adjTotal;
 
-  // Per-SKU
+  console.log(`[CRUNCH] Gross: £${grossSales.toFixed(2)}, Net: £${netRevenue.toFixed(2)}, Fees: £${totalFees.toFixed(2)}`);
+
+  // Per-SKU aggregation
   const skuMap = {};
   for (const o of tx.orders) {
     const sku = o.sku || '(no label)';
@@ -273,17 +300,17 @@ function crunchData(txText, ordText) {
 
   const allSkus = Object.values(skuMap).map(s => ({
     ...s,
-    fee_pct:  s.gross > 0 ? Math.abs(s.fees) / s.gross * 100 : 0,
-    avg_val:  s.orders > 0 ? s.gross / s.orders : 0,
+    fee_pct: s.gross > 0 ? Math.abs(s.fees) / s.gross * 100 : 0,
+    avg_val: s.orders > 0 ? s.gross / s.orders : 0,
   })).sort((a,b) => b.gross - a.gross);
 
-  // Postage split from orders
+  // Postage split
   let llCount = 0, t48Count = 0;
   for (const o of ord) {
     if (inferPostage(o.sku, o.qty) === 'll') llCount++; else t48Count++;
   }
 
-  // Daily
+  // Daily sales
   const dailyMap = {};
   for (const o of tx.orders) {
     const d = o.date || 'unknown';
@@ -300,7 +327,8 @@ function crunchData(txText, ordText) {
     period,
     metrics: {
       grossSales, netRevenue, totalUnits,
-      uniqueOrders, totalOrderLines: tx.orders.length,
+      uniqueOrders,
+      totalOrderLines: tx.orders.length,
       uniqueSkus: allSkus.length,
       avgOrderValue: uniqueOrders > 0 ? grossSales / uniqueOrders : 0,
       totalFees:     Math.abs(totalFees),
@@ -313,7 +341,9 @@ function crunchData(txText, ordText) {
       otherFeeTotal: Math.abs(otherFeeTotal),
       adjTotal:      Math.abs(adjTotal),
       payout:        Math.abs(payout),
-      feeRate: grossSales > 0 ? (Math.abs(totalFees) + Math.abs(otherFeeTotal)) / grossSales * 100 : 0,
+      feeRate: grossSales > 0
+        ? (Math.abs(totalFees) + Math.abs(otherFeeTotal)) / grossSales * 100
+        : 0,
     },
     allSkus,
     daily,
