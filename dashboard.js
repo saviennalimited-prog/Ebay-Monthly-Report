@@ -14,6 +14,8 @@ const BAD_FEE_MIN  = 25, BAD_REV_MIN  = 5;
 function loadSaved() {
   try { const c = localStorage.getItem('emr_costs'); if (c) COSTS = JSON.parse(c); } catch(e){}
   try { const p = localStorage.getItem('emr_postage'); if (p) POSTAGE = {...POSTAGE,...JSON.parse(p)}; } catch(e){}
+  loadOtherExpenses();
+  loadPostageOverride();
 }
 function saveToStorage() {
   try { localStorage.setItem('emr_costs', JSON.stringify(COSTS)); localStorage.setItem('emr_postage', JSON.stringify(POSTAGE)); } catch(e){}
@@ -69,7 +71,7 @@ function goBack() {
 }
 
 // ---- Tabs ----
-const TAB_IDS = ['overview','profit','skus','health','postage','expenses','costs'];
+const TAB_IDS = ['overview','profit','totalprofit','skus','health','postage','expenses','otherexp','costs'];
 
 function showTab(id) {
   currentTab = id;
@@ -82,15 +84,16 @@ function showTab(id) {
     document.getElementById('dashMain').appendChild(panel);
     renderTab(id, panel);
   } else {
-    if (id === 'costs' || id === 'profit' || id === 'health' || id === 'postage') renderTab(id, panel);
+    if (['costs','profit','totalprofit','health','postage','otherexp'].includes(id)) renderTab(id, panel);
     if (id === 'skus') renderSkuTable();
   }
   panel.style.display = 'block';
 }
 
 function renderTab(id, el) {
-  const fn = {overview:renderOverview, profit:renderProfit, skus:renderSkus,
-               health:renderHealth, postage:renderPostage, expenses:renderExpenses, costs:renderCosts};
+  const fn = {overview:renderOverview, profit:renderProfit, totalprofit:renderTotalProfit,
+               skus:renderSkus, health:renderHealth, postage:renderPostage,
+               expenses:renderExpenses, otherexp:renderOtherExp, costs:renderCosts};
   if (fn[id]) fn[id](el);
 }
 
@@ -133,8 +136,8 @@ function getProfit() {
 }
 
 function inferPostageType(sku, units, orders) {
-  const avgQty = orders > 0 ? units / orders : 1;
-  return (isCableSku(sku) && avgQty <= 1.2) ? 'll' : 't48';
+  // Uses same logic as parser.js isCableSku()
+  return isCableSku(sku) ? 'll' : 't48';
 }
 
 function getSkuPostageCost(s) {
@@ -230,7 +233,7 @@ function renderProfit(el) {
   const profitCls = p.profit >= 0 ? 'pos' : 'neg';
 
   el.innerHTML = `
-    <div class="print-title"><h2>Profit & ROI — ${REPORT.period}</h2></div>
+    <div class="print-title"><h2>eBay Profit & ROI — ${REPORT.period}</h2></div>
     <div class="profit-box">
       <div style="font-size:12px;color:var(--mu)">Estimated Net Profit (${p.skusCosted} of ${m.uniqueSkus} SKUs costed)</div>
       <div class="profit-big ${profitCls}">${p.profit>=0?'+':''}${f0(p.profit)}</div>
@@ -486,74 +489,122 @@ function buildSuggestions(good, bad, warn) {
 
 // ---- POSTAGE ----
 function renderPostage(el) {
+  loadPostageOverride();
+  const counts = getPostageCounts();
   const llCost  = parseFloat(POSTAGE.ll  || 0);
   const t48Cost = parseFloat(POSTAGE.t48 || 0);
-  const llTotal  = REPORT.postage.ll  * llCost;
-  const t48Total = REPORT.postage.t48 * t48Cost;
+  const llTotal  = counts.ll  * llCost;
+  const t48Total = counts.t48 * t48Cost;
   const grandTotal = llTotal + t48Total;
   const hasCosts = llCost > 0 || t48Cost > 0;
+  const totalOrders = counts.ll + counts.t48;
 
   el.innerHTML = `
     <div class="print-title"><h2>Postage Report — ${REPORT.period}</h2></div>
-    ${!hasCosts ? `<div style="background:rgba(247,185,85,.1);border:1px solid rgba(247,185,85,.3);border-radius:var(--r);padding:12px 16px;margin-bottom:18px;font-size:12px;color:var(--am)">
-      ⚠️ Enter your postage costs in <strong style="cursor:pointer" onclick="showTab('costs')">Costs Setup</strong> to see total postage spend.
-    </div>` : ''}
+
+    <div class="card mb14 postage-override-box">
+      <div class="card-title" style="margin-bottom:10px">Postage Count Verification</div>
+      <div style="font-size:12px;color:var(--mu);margin-bottom:12px">
+        System calculated: <strong style="color:var(--am)">${REPORT.postage.ll} Large Letter</strong> and <strong style="color:var(--ac)">${REPORT.postage.t48} RM Tracked 48</strong> based on SKU names.
+        If this is incorrect, enable manual override below.
+      </div>
+      <div class="postage-check-row">
+        <input type="checkbox" id="postageOverrideCheck" ${POSTAGE_OVERRIDE.enabled?'checked':''} onchange="togglePostageOverride()">
+        <label for="postageOverrideCheck">The calculated counts above are <strong>incorrect</strong> — let me enter the correct numbers manually</label>
+      </div>
+      <div id="manualCountsBox" style="display:${POSTAGE_OVERRIDE.enabled?'block':'none'}">
+        <div class="manual-counts-grid">
+          <div class="manual-count-card">
+            <div class="manual-count-label">📮 Royal Mail Large Letter — actual order count</div>
+            <input class="manual-count-inp" type="number" min="0" id="manualLL"
+              value="${POSTAGE_OVERRIDE.ll||''}" placeholder="0" oninput="saveManualCounts()">
+          </div>
+          <div class="manual-count-card">
+            <div class="manual-count-label">📦 RM Tracked 48 — actual order count</div>
+            <input class="manual-count-inp" type="number" min="0" id="manualT48"
+              value="${POSTAGE_OVERRIDE.t48||''}" placeholder="0" oninput="saveManualCounts()">
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div class="metric-grid" style="grid-template-columns:repeat(4,1fr)">
-      ${mc('LL Orders',    num(REPORT.postage.ll),  'Royal Mail Large Letter', 'c-am')}
-      ${mc('RM48 Orders',  num(REPORT.postage.t48), 'Royal Mail Tracked 48', 'c-bl')}
-      ${mc('LL Postage Cost', hasCosts&&llCost>0?f0(llTotal):'Enter cost', llCost>0?num(REPORT.postage.ll)+' × '+f2(llCost):'Set in Costs Setup', 'c-am')}
-      ${mc('RM48 Postage Cost', hasCosts&&t48Cost>0?f0(t48Total):'Enter cost', t48Cost>0?num(REPORT.postage.t48)+' × '+f2(t48Cost):'Set in Costs Setup', 'c-bl')}
+      ${mc('LL Orders',         num(counts.ll),  'Royal Mail Large Letter', 'c-am')}
+      ${mc('RM48 Orders',       num(counts.t48), 'Royal Mail Tracked 48', 'c-bl')}
+      ${mc('LL Postage Cost',   hasCosts&&llCost>0?f0(llTotal):'Enter cost', llCost>0?num(counts.ll)+' × '+f2(llCost):'Set in Costs Setup', 'c-am')}
+      ${mc('RM48 Postage Cost', hasCosts&&t48Cost>0?f0(t48Total):'Enter cost', t48Cost>0?num(counts.t48)+' × '+f2(t48Cost):'Set in Costs Setup', 'c-bl')}
     </div>
 
     <div class="post-split">
       <div class="post-card ll">
         <div class="post-card-icon">📮</div>
         <div class="post-card-name">Royal Mail Large Letter</div>
-        <div class="post-stat-row"><span class="post-stat-label">Total Orders</span><span class="post-stat-val td-am">${num(REPORT.postage.ll)}</span></div>
+        <div class="post-stat-row"><span class="post-stat-label">Total Orders</span><span class="post-stat-val td-am">${num(counts.ll)}</span></div>
         <div class="post-stat-row"><span class="post-stat-label">Cost per Label</span><span class="post-stat-val">${llCost>0?f2(llCost):'Not set'}</span></div>
         <div class="post-stat-row"><span class="post-stat-label">Total Postage Spend</span><span class="post-stat-val td-rd">${llCost>0?'-'+f0(llTotal):'—'}</span></div>
-        <div class="post-stat-row"><span class="post-stat-label">% of All Orders</span><span class="post-stat-val">${pct(REPORT.postage.ll/(REPORT.postage.ll+REPORT.postage.t48)*100)}</span></div>
-        <div style="margin-top:10px;font-size:10px;color:var(--mu)">Used for: single cable orders (qty=1)</div>
+        <div class="post-stat-row"><span class="post-stat-label">% of All Orders</span><span class="post-stat-val">${totalOrders>0?pct(counts.ll/totalOrders*100):'—'}</span></div>
+        <div style="margin-top:10px;font-size:10px;color:var(--mu)">Used for: 1 Pack White/Black, single cables, OTG (no plug)</div>
       </div>
       <div class="post-card t48">
         <div class="post-card-icon">📦</div>
         <div class="post-card-name">Royal Mail Tracked 48</div>
-        <div class="post-stat-row"><span class="post-stat-label">Total Orders</span><span class="post-stat-val td-ac">${num(REPORT.postage.t48)}</span></div>
+        <div class="post-stat-row"><span class="post-stat-label">Total Orders</span><span class="post-stat-val td-ac">${num(counts.t48)}</span></div>
         <div class="post-stat-row"><span class="post-stat-label">Cost per Label</span><span class="post-stat-val">${t48Cost>0?f2(t48Cost):'Not set'}</span></div>
         <div class="post-stat-row"><span class="post-stat-label">Total Postage Spend</span><span class="post-stat-val td-rd">${t48Cost>0?'-'+f0(t48Total):'—'}</span></div>
-        <div class="post-stat-row"><span class="post-stat-label">% of All Orders</span><span class="post-stat-val">${pct(REPORT.postage.t48/(REPORT.postage.ll+REPORT.postage.t48)*100)}</span></div>
-        <div style="margin-top:10px;font-size:10px;color:var(--mu)">Used for: qty 2+ orders, accessories, screen protectors</div>
+        <div class="post-stat-row"><span class="post-stat-label">% of All Orders</span><span class="post-stat-val">${totalOrders>0?pct(counts.t48/totalOrders*100):'—'}</span></div>
+        <div style="margin-top:10px;font-size:10px;color:var(--mu)">Used for: cables with plug, screen protectors, card readers, accessories</div>
       </div>
     </div>
 
-    ${hasCosts ? `<div class="sum-box">
-      <div class="sum-row"><span class="sum-label">📮 RM Large Letter (${num(REPORT.postage.ll)} × ${f2(llCost)})</span><span class="td-mono td-rd">-${f0(llTotal)}</span></div>
-      <div class="sum-row"><span class="sum-label">📦 RM Tracked 48 (${num(REPORT.postage.t48)} × ${f2(t48Cost)})</span><span class="td-mono td-rd">-${f0(t48Total)}</span></div>
+    ${hasCosts ? `<div class="sum-box mb14">
+      <div class="sum-row"><span class="sum-label">📮 RM Large Letter (${num(counts.ll)} × ${f2(llCost)})</span><span class="td-mono td-rd">-${f0(llTotal)}</span></div>
+      <div class="sum-row"><span class="sum-label">📦 RM Tracked 48 (${num(counts.t48)} × ${f2(t48Cost)})</span><span class="td-mono td-rd">-${f0(t48Total)}</span></div>
       <div class="sum-row"><span class="sum-total-label">Total Postage Spend</span><span class="td-mono td-rd" style="font-size:17px">-${f0(grandTotal)}</span></div>
     </div>
-    <div style="font-size:11px;color:var(--mu);text-align:center;margin-top:8px">
-      Postage = ${pct(grandTotal/REPORT.metrics.grossSales*100)} of gross sales · ${pct(grandTotal/(REPORT.metrics.grossSales-REPORT.metrics.totalFees-REPORT.metrics.otherFeeTotal)*100)} of net revenue
-    </div>` : ''}
+    <div style="font-size:11px;color:var(--mu);text-align:center;margin-bottom:14px">
+      Postage = ${pct(grandTotal/REPORT.metrics.grossSales*100)} of gross sales
+    </div>` : `<div style="background:rgba(247,185,85,.1);border:1px solid rgba(247,185,85,.3);border-radius:var(--r);padding:12px 16px;margin-bottom:14px;font-size:12px;color:var(--am)">
+      ⚠️ Enter your postage costs in <strong style="cursor:pointer" onclick="showTab('costs')">Costs Setup</strong> to see total postage spend.
+    </div>`}
 
-    <div class="card" style="margin-top:14px">
-      <div class="card-title">Postage Type per SKU <span class="card-badge">Based on SKU name + avg qty</span></div>
+    <div class="card">
+      <div class="card-title">Postage Classification per SKU <span class="card-badge">Based on SKU name rules</span></div>
       <div class="g2">
         <div>
           <div style="font-size:12px;font-weight:600;color:var(--am);margin-bottom:10px">📮 Large Letter SKUs</div>
+          <div style="font-size:10px;color:var(--mu);margin-bottom:8px">Cables/OTG/Packs WITHOUT plug</div>
           ${REPORT.allSkus.filter(s=>inferPostageType(s.sku,s.units,s.orders)==='ll').map(s=>`
-            <div class="health-sku-row"><span class="health-sku-name" title="${s.sku}">${s.sku}</span>
-            <span class="td-mono td-mu" style="font-size:11px">${s.orders} orders</span></div>`).join('')}
+            <div class="health-sku-row">
+              <span class="health-sku-name" title="${s.sku}">${s.sku}</span>
+              <span class="td-mono td-mu" style="font-size:11px">${s.orders} orders</span>
+            </div>`).join('')}
         </div>
         <div>
           <div style="font-size:12px;font-weight:600;color:var(--ac);margin-bottom:10px">📦 RM Tracked 48 SKUs</div>
+          <div style="font-size:10px;color:var(--mu);margin-bottom:8px">Has plug, accessories, screen protectors</div>
           ${REPORT.allSkus.filter(s=>inferPostageType(s.sku,s.units,s.orders)==='t48').map(s=>`
-            <div class="health-sku-row"><span class="health-sku-name" title="${s.sku}">${s.sku}</span>
-            <span class="td-mono td-mu" style="font-size:11px">${s.orders} orders</span></div>`).join('')}
+            <div class="health-sku-row">
+              <span class="health-sku-name" title="${s.sku}">${s.sku}</span>
+              <span class="td-mono td-mu" style="font-size:11px">${s.orders} orders</span>
+            </div>`).join('')}
         </div>
       </div>
     </div>`;
 }
+
+function togglePostageOverride() {
+  const cb = document.getElementById('postageOverrideCheck');
+  POSTAGE_OVERRIDE.enabled = cb?.checked || false;
+  document.getElementById('manualCountsBox').style.display = POSTAGE_OVERRIDE.enabled ? 'block' : 'none';
+  savePostageOverride();
+}
+
+function saveManualCounts() {
+  POSTAGE_OVERRIDE.ll  = parseInt(document.getElementById('manualLL')?.value)  || 0;
+  POSTAGE_OVERRIDE.t48 = parseInt(document.getElementById('manualT48')?.value) || 0;
+  savePostageOverride();
+}
+
 
 // ---- EBAY EXPENSES ----
 function renderExpenses(el) {
@@ -798,6 +849,236 @@ function printReport() {
   setTimeout(()=>{ window.print();
     setTimeout(()=>{ TAB_IDS.forEach(id=>{ const p=document.getElementById('panel-'+id); if(p) p.style.display=id===currentTab?'block':'none'; }); },500);
   },400);
+}
+
+
+// ============================================================
+// OTHER EXPENSES PAGE
+// ============================================================
+let OTHER_EXPENSES = [];  // [{id, name, type, customType, amount, date}]
+const EXP_CATS = ['Storage','Office Equipment','Software','Packaging','Food','Travel','Other'];
+
+function loadOtherExpenses() {
+  try { const e = localStorage.getItem('emr_other_expenses'); if (e) OTHER_EXPENSES = JSON.parse(e); } catch(e){}
+}
+function saveOtherExpenses() {
+  try { localStorage.setItem('emr_other_expenses', JSON.stringify(OTHER_EXPENSES)); } catch(e){}
+}
+
+function renderOtherExp(el) {
+  loadOtherExpenses();
+  const totalOther = OTHER_EXPENSES.reduce((s,e) => s + parseFloat(e.amount||0), 0);
+  const byCat = {};
+  OTHER_EXPENSES.forEach(e => {
+    const cat = e.type === 'Other' ? (e.customType||'Other') : e.type;
+    byCat[cat] = (byCat[cat]||0) + parseFloat(e.amount||0);
+  });
+
+  el.innerHTML = `
+    <div class="print-title"><h2>Other Expenses — ${REPORT.period}</h2></div>
+    <div class="metric-grid" style="grid-template-columns:repeat(3,1fr)">
+      ${mc('Total Other Expenses', f0(totalOther), OTHER_EXPENSES.length+' entries', 'c-rd')}
+      ${mc('Expense Categories', Object.keys(byCat).length, 'Different types logged', 'c-am')}
+      ${mc('Avg per Entry', OTHER_EXPENSES.length>0?f2(totalOther/OTHER_EXPENSES.length):'£0.00', 'Mean expense amount', 'c-mu')}
+    </div>
+
+    <div class="card mb14">
+      <div class="card-title">Add New Expense</div>
+      <div class="exp-add-row">
+        <input class="exp-inp" type="text" id="expName" placeholder="Expense name (e.g. Amazon Storage Jan)">
+        <select class="exp-sel" id="expType" onchange="toggleCustomType()">
+          ${EXP_CATS.map(c=>`<option value="${c}">${c}</option>`).join('')}
+        </select>
+        <input class="exp-inp" type="text" id="expCustomType" placeholder="Specify type" style="display:none">
+        <input class="exp-inp mono" type="number" step="0.01" min="0" id="expAmount" placeholder="0.00">
+        <button class="exp-add-btn" onclick="addExpense()">+ Add</button>
+      </div>
+      <div style="font-size:11px;color:var(--mu)">Expenses are saved in your browser and persist each month.</div>
+    </div>
+
+    ${Object.keys(byCat).length > 0 ? `
+    <div class="card mb14">
+      <div class="card-title">By Category</div>
+      <div class="g2">
+        <div>${Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(([cat,amt])=>`
+          <div class="bar-item">
+            <div class="bar-head">
+              <span class="bar-label"><span class="exp-cat-badge exp-cat-${cat.toLowerCase().replace(/ /g,'')}">${cat}</span></span>
+              <span class="bar-val td-rd">-${f0(amt)}</span>
+            </div>
+            <div class="bar-track"><div class="bar-fill" style="width:${totalOther>0?(amt/totalOther*100).toFixed(1):0}%;background:var(--rd)"></div></div>
+          </div>`).join('')}
+        </div>
+        <div class="sum-box">
+          ${Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(([cat,amt])=>`
+            <div class="sum-row"><span class="sum-label">${cat}</span><span class="td-mono td-rd">-${f2(amt)}</span></div>`).join('')}
+          <div class="sum-row"><span class="sum-total-label">Total Other Expenses</span><span class="td-mono td-rd" style="font-size:16px">-${f0(totalOther)}</span></div>
+        </div>
+      </div>
+    </div>` : ''}
+
+    <div class="card">
+      <div class="card-title">All Expenses <span class="card-badge">${OTHER_EXPENSES.length} entries</span></div>
+      ${OTHER_EXPENSES.length === 0 ? `<div style="text-align:center;padding:30px;color:var(--mu);font-size:13px">No expenses added yet. Use the form above to add your first expense.</div>` : `
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>Name</th><th>Category</th><th>Amount</th><th>Action</th></tr></thead>
+          <tbody>${OTHER_EXPENSES.map((e,i)=>`<tr>
+            <td class="td-rank">${i+1}</td>
+            <td style="font-weight:500">${e.name}</td>
+            <td><span class="exp-cat-badge exp-cat-${(e.type==='Other'?(e.customType||'other'):e.type).toLowerCase().replace(/ /g,'')}">${e.type==='Other'?(e.customType||'Other'):e.type}</span></td>
+            <td class="td-mono td-rd">-${f2(parseFloat(e.amount))}</td>
+            <td><button class="exp-del-btn" onclick="deleteExpense(${i})">Remove</button></td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>`}
+    </div>`;
+}
+
+function toggleCustomType() {
+  const type = document.getElementById('expType')?.value;
+  const custom = document.getElementById('expCustomType');
+  if (custom) custom.style.display = type === 'Other' ? 'block' : 'none';
+}
+
+function addExpense() {
+  const name = document.getElementById('expName')?.value?.trim();
+  const type = document.getElementById('expType')?.value;
+  const customType = document.getElementById('expCustomType')?.value?.trim();
+  const amount = parseFloat(document.getElementById('expAmount')?.value);
+  if (!name) { alert('Please enter an expense name.'); return; }
+  if (!amount || amount <= 0) { alert('Please enter a valid amount.'); return; }
+  OTHER_EXPENSES.push({ id: Date.now(), name, type, customType: type==='Other'?customType:'', amount });
+  saveOtherExpenses();
+  const panel = document.getElementById('panel-otherexp');
+  if (panel) renderOtherExp(panel);
+}
+
+function deleteExpense(idx) {
+  if (!confirm('Remove this expense?')) return;
+  OTHER_EXPENSES.splice(idx, 1);
+  saveOtherExpenses();
+  const panel = document.getElementById('panel-otherexp');
+  if (panel) renderOtherExp(panel);
+}
+
+function getOtherExpensesTotal() {
+  loadOtherExpenses();
+  return OTHER_EXPENSES.reduce((s,e) => s + parseFloat(e.amount||0), 0);
+}
+
+// ============================================================
+// TOTAL PROFIT & ROI PAGE (eBay profit + other expenses)
+// ============================================================
+function renderTotalProfit(el) {
+  const p = getProfit();
+  const otherTotal = getOtherExpensesTotal();
+
+  if (!p || p.skusCosted === 0) {
+    el.innerHTML = `<div class="card" style="text-align:center;padding:40px">
+      <div style="font-size:32px;margin-bottom:12px">💰</div>
+      <div style="font-size:16px;font-weight:600;margin-bottom:8px">Enter costs first</div>
+      <div style="font-size:13px;color:var(--mu);margin-bottom:20px">Go to <strong>Costs Setup</strong> to enter your buying costs and postage rates.</div>
+      <button class="btn btn-pdf" onclick="showTab('costs')" style="margin:0 auto">Go to Costs Setup →</button>
+    </div>`; return;
+  }
+
+  const totalProfit = p.profit - otherTotal;
+  const totalMargin = p.tGross > 0 ? (totalProfit / p.tGross * 100) : 0;
+  const totalROI = p.tCOGS > 0 ? (totalProfit / p.tCOGS * 100) : null;
+  const profCls = totalProfit >= 0 ? 'pos' : 'neg';
+
+  el.innerHTML = `
+    <div class="print-title"><h2>Total Profit & ROI — ${REPORT.period}</h2></div>
+    <div class="total-profit-box">
+      <div style="font-size:12px;color:var(--mu)">Total Net Profit (after eBay fees, COGS, postage & other expenses)</div>
+      <div class="profit-big ${profCls}">${totalProfit>=0?'+':''}${f0(totalProfit)}</div>
+      <div style="font-size:12px;color:var(--mu)">${p.skusCosted} of ${REPORT.allSkus.length} SKUs costed · ${OTHER_EXPENSES.length} other expenses logged</div>
+    </div>
+
+    <div class="roi-grid">
+      <div class="roi-card">
+        <div class="roi-label">Total ROI</div>
+        <div class="roi-val" style="color:${totalROI>=0?'var(--gr)':'var(--rd)'}">${totalROI!==null?pct(totalROI):'—'}</div>
+        <div style="font-size:10px;color:var(--mu);margin-top:4px">Total profit ÷ Cost of Goods</div>
+      </div>
+      <div class="roi-card">
+        <div class="roi-label">Total Profit Margin</div>
+        <div class="roi-val" style="color:${totalMargin>=15?'var(--gr)':totalMargin>=5?'var(--am)':'var(--rd)'}">${pct(totalMargin)}</div>
+        <div style="font-size:10px;color:var(--mu);margin-top:4px">Total profit ÷ Gross Sales</div>
+      </div>
+      <div class="roi-card">
+        <div class="roi-label">eBay ROI (before other exp.)</div>
+        <div class="roi-val" style="color:${p.roi>=0?'var(--gr)':'var(--rd)'}">${p.roi!==null?pct(p.roi):'—'}</div>
+        <div style="font-size:10px;color:var(--mu);margin-top:4px">eBay profit only</div>
+      </div>
+    </div>
+
+    <div class="g2">
+      <div class="card">
+        <div class="card-title">Complete Profit Breakdown</div>
+        <div class="sum-box">
+          <div class="sum-row"><span class="sum-label">Gross Sales</span><span class="td-mono td-gr">+${f2(p.tGross)}</span></div>
+          <div class="sum-row"><span class="sum-label">eBay Fees (all fees)</span><span class="td-mono td-rd">-${f2(p.totalEbayFees)}</span></div>
+          <div class="sum-row"><span class="sum-label">Net Revenue (after eBay)</span><span class="td-mono td-ac">${f2(p.tNet)}</span></div>
+          <div class="sum-row"><span class="sum-label">Cost of Goods (COGS)</span><span class="td-mono td-rd">-${f2(p.tCOGS)}</span></div>
+          <div class="sum-row"><span class="sum-label">Postage Costs</span><span class="td-mono td-rd">-${f2(p.tPost)}</span></div>
+          <div class="sum-row" style="border-top:1px solid rgba(34,201,122,.2);margin-top:4px;padding-top:8px">
+            <span class="sum-label" style="color:var(--tx);font-weight:500">eBay Net Profit</span>
+            <span class="td-mono ${p.profit>=0?'td-gr':'td-rd'}">${p.profit>=0?'+':''}${f2(p.profit)}</span>
+          </div>
+          <div class="sum-row"><span class="sum-label">Other Expenses</span><span class="td-mono td-rd">-${f2(otherTotal)}</span></div>
+          <div class="sum-row"><span class="sum-total-label">Total Net Profit</span><span class="td-mono ${profCls==='pos'?'td-gr':'td-rd'}" style="font-size:17px">${totalProfit>=0?'+':''}${f2(totalProfit)}</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Where Every £1 Goes (Total)</div>
+        ${[
+          {l:'eBay Fees',       v:p.totalEbayFees, c:'var(--rd)'},
+          {l:'Cost of Goods',   v:p.tCOGS,          c:'var(--am)'},
+          {l:'Postage',         v:p.tPost,           c:'var(--ac2)'},
+          {l:'Other Expenses',  v:otherTotal,        c:'#ff6b81'},
+          {l:'Total Net Profit',v:Math.max(0,totalProfit), c:'var(--gr)'},
+        ].map(item => {
+          const r = p.tGross > 0 ? Math.abs(item.v)/p.tGross*100 : 0;
+          return `<div class="bar-item">
+            <div class="bar-head"><span class="bar-label">${item.l}</span>
+              <span class="bar-val" style="color:${item.c}">${pct(r)}</span></div>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.min(r,100).toFixed(1)}%;background:${item.c}"></div></div>
+          </div>`;
+        }).join('')}
+        <div style="margin-top:14px;background:var(--sf2);border-radius:8px;padding:12px">
+          <div style="font-size:10px;color:var(--mu);margin-bottom:6px">OTHER EXPENSES BREAKDOWN</div>
+          ${OTHER_EXPENSES.length===0 ? '<div style="font-size:11px;color:var(--mu)">No other expenses logged yet. <span style="color:var(--ac);cursor:pointer" onclick="showTab('otherexp')">Add expenses →</span></div>' :
+            OTHER_EXPENSES.map(e=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0">
+              <span style="color:var(--mu)">${e.name}</span>
+              <span class="td-mono td-rd">-${f2(parseFloat(e.amount))}</span>
+            </div>`).join('')
+          }
+          ${OTHER_EXPENSES.length>0?`<div style="display:flex;justify-content:space-between;font-size:12px;font-weight:600;padding:6px 0;border-top:1px solid rgba(255,255,255,.06);margin-top:4px"><span>Total</span><span class="td-rd">-${f0(otherTotal)}</span></div>`:''}
+        </div>
+      </div>
+    </div>`;
+}
+
+// ============================================================
+// POSTAGE PAGE — updated with manual override
+// ============================================================
+let POSTAGE_OVERRIDE = { enabled: false, ll: 0, t48: 0 };
+
+function loadPostageOverride() {
+  try { const p = localStorage.getItem('emr_postage_override'); if(p) POSTAGE_OVERRIDE={...POSTAGE_OVERRIDE,...JSON.parse(p)}; } catch(e){}
+}
+function savePostageOverride() {
+  try { localStorage.setItem('emr_postage_override', JSON.stringify(POSTAGE_OVERRIDE)); } catch(e){}
+}
+
+function getPostageCounts() {
+  loadPostageOverride();
+  if (POSTAGE_OVERRIDE.enabled) {
+    return { ll: parseInt(POSTAGE_OVERRIDE.ll)||0, t48: parseInt(POSTAGE_OVERRIDE.t48)||0 };
+  }
+  return { ll: REPORT.postage.ll, t48: REPORT.postage.t48 };
 }
 
 window.addEventListener('load', loadSaved);
