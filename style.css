@@ -289,3 +289,45 @@ select.sel{background:var(--sf2);border:1px solid var(--bd);border-radius:7px;pa
   .dash-main{padding:12px 14px}.tabs{padding:10px 14px 0}.hdr{padding:10px 14px}
   .metric-grid{grid-template-columns:repeat(2,1fr)}
 }
+
+/* OTHER EXPENSES */
+.exp-table-wrap{overflow-x:auto;margin-bottom:14px}
+.exp-add-row{display:grid;grid-template-columns:2fr 1.5fr 1fr 80px auto;gap:8px;align-items:center;margin-bottom:8px}
+.exp-inp{background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:7px 10px;
+  font-size:12px;color:var(--tx);font-family:var(--font);outline:none;width:100%}
+.exp-inp:focus{border-color:var(--ac)}
+.exp-inp.mono{font-family:var(--mono)}
+select.exp-sel{background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:7px 10px;
+  font-size:12px;color:var(--tx);font-family:var(--font);outline:none;width:100%;cursor:pointer}
+.exp-add-btn{background:var(--ac);color:#fff;border:none;border-radius:6px;padding:7px 14px;
+  font-size:12px;font-weight:600;cursor:pointer;font-family:var(--font);white-space:nowrap}
+.exp-add-btn:hover{opacity:.85}
+.exp-del-btn{background:rgba(247,85,85,.15);color:var(--rd);border:1px solid rgba(247,85,85,.3);
+  border-radius:5px;padding:4px 8px;font-size:11px;cursor:pointer;font-family:var(--font)}
+.exp-del-btn:hover{background:rgba(247,85,85,.25)}
+.exp-cat-badge{display:inline-flex;font-size:10px;padding:2px 7px;border-radius:4px;font-weight:500;white-space:nowrap}
+.exp-cat-storage{background:rgba(79,142,247,.15);color:var(--ac)}
+.exp-cat-office{background:rgba(124,92,252,.15);color:var(--ac2)}
+.exp-cat-food{background:rgba(247,185,85,.15);color:var(--am)}
+.exp-cat-travel{background:rgba(34,201,122,.15);color:var(--gr)}
+.exp-cat-other{background:rgba(107,116,148,.15);color:var(--mu)}
+.exp-cat-software{background:rgba(247,85,85,.15);color:var(--rd)}
+.exp-cat-packaging{background:rgba(255,159,67,.15);color:#ff9f43}
+
+/* POSTAGE MANUAL OVERRIDE */
+.postage-override-box{background:rgba(247,185,85,.07);border:1px solid rgba(247,185,85,.25);
+  border-radius:var(--r);padding:16px;margin-bottom:14px}
+.postage-check-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.postage-check-row label{font-size:12px;color:var(--tx);cursor:pointer}
+.postage-check-row input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:var(--ac)}
+.manual-counts-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.manual-count-card{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:12px}
+.manual-count-label{font-size:11px;color:var(--mu);margin-bottom:6px}
+.manual-count-inp{width:100%;background:var(--bg);border:1px solid var(--bd);border-radius:5px;
+  padding:6px 8px;font-size:16px;color:var(--gr);font-family:var(--mono);font-weight:600;
+  outline:none;text-align:center}
+.manual-count-inp:focus{border-color:var(--ac)}
+
+/* TOTAL PROFIT PAGE */
+.total-profit-box{background:linear-gradient(135deg,rgba(34,201,122,.1),rgba(124,92,252,.07));
+  border:1px solid rgba(34,201,122,.3);border-radius:var(--r);padding:20px;text-align:center;margin-bottom:14px}
