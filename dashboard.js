@@ -107,21 +107,29 @@ function mc(label, value, sub, col) {
 function getProfit() {
   if (!REPORT) return null;
   const m = REPORT.metrics;
-  let tGross=0, tNet=0, tCOGS=0, tPost=0, skusCosted=0;
+  let tGross=0, tCOGS=0, tPost=0, skusCosted=0;
   REPORT.allSkus.forEach(s => {
     const c = parseFloat(COSTS[s.sku] || 0);
     if (c > 0) {
       const pt = inferPostageType(s.sku, s.units, s.orders);
       const pc = pt === 'll' ? POSTAGE.ll : POSTAGE.t48;
-      tGross += s.gross; tNet += s.net;
-      tCOGS += c * s.units; tPost += pc * s.orders;
+      tGross += s.gross;
+      // Bug fix 2: postage cost × orders (not units) — one label per order
+      tCOGS += c * s.units;
+      tPost += pc * s.orders;
       skusCosted++;
     }
   });
+  // Bug fix 1: totalEbayFees must include ALL fees (FVF + Promoted + Other)
+  // proportional to the costed SKUs' share of gross
+  const grossFraction = m.grossSales > 0 ? tGross / m.grossSales : 0;
+  const totalAllFees = m.totalFees + m.otherFeeTotal; // FVF + Promoted + Other
+  const tEbayFees = totalAllFees * grossFraction;
+  const tNet = tGross - tEbayFees;  // true net after ALL ebay fees
   const profit = tNet - tCOGS - tPost;
   const roi    = tCOGS > 0 ? (profit / tCOGS * 100) : null;
   const margin = tGross > 0 ? (profit / tGross * 100) : null;
-  return { tGross, tNet, tCOGS, tPost, profit, roi, margin, skusCosted, totalEbayFees: tGross - tNet };
+  return { tGross, tNet, tCOGS, tPost, profit, roi, margin, skusCosted, totalEbayFees: tEbayFees };
 }
 
 function inferPostageType(sku, units, orders) {
@@ -137,8 +145,11 @@ function getSkuPostageCost(s) {
 function getSkuProfit(s) {
   const cost = parseFloat(COSTS[s.sku] || 0);
   if (!cost) return null;
+  const m = REPORT.metrics;
+  const totalFeeRate = m.grossSales > 0 ? (m.totalFees + m.otherFeeTotal) / m.grossSales : 0;
+  const skuNet = s.gross - (s.gross * totalFeeRate);
   const pc = getSkuPostageCost(s);
-  return s.net - (cost + pc) * s.units;
+  return skuNet - (cost * s.units) - (pc * s.orders);
 }
 
 // ---- OVERVIEW ----
@@ -286,7 +297,9 @@ function renderProfit(el) {
           <tbody>${REPORT.allSkus.filter(s=>parseFloat(COSTS[s.sku]||0)>0)
             .map(s => {
               const c=parseFloat(COSTS[s.sku]),pc=getSkuPostageCost(s);
-              const cogs=c*s.units,post=pc*s.orders,profit=s.net-cogs-post;
+              const _feeRate=REPORT.metrics.grossSales>0?(REPORT.metrics.totalFees+REPORT.metrics.otherFeeTotal)/REPORT.metrics.grossSales:0;
+              const _skuNet=s.gross-(s.gross*_feeRate);
+              const cogs=c*s.units,post=pc*s.orders,profit=_skuNet-cogs-post;
               const margin=s.gross>0?profit/s.gross*100:0,roi=cogs>0?profit/cogs*100:null;
               const cls=profit>=0?'td-gr':'td-rd';
               return `<tr><td class="td-rank"></td><td class="td-sku" title="${s.sku}">${s.sku}</td>
