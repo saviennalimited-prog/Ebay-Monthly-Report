@@ -4,16 +4,24 @@
 // entirely in the browser. No server required.
 // ============================================================
 
-const CABLE_KW = ['cable', 'lighting', '8 pin', '8-pin', 'c to c', 'cablez', 'otg'];
+// ---- Postage logic ----
+// Large Letter: cables/OTG/packs WITHOUT plug in SKU name
+// RM48: anything containing 'plug', accessories, screen protectors, card readers
+const LL_KW = ['1 pack white','1 pack black','1m c to c','2m c to c','3m c to c',
+               '1m 8-pin','2m 8-pin','3m 8-pin','otg','1m lighting','2m lighting','3m lighting',
+               '1 m c to c','2 m c to c','3 m c to c','1 m 8 pin','2 m 8 pin','3 m 8 pin',
+               '1m 8pin','2m 8pin','3m 8pin','cablez','lighting'];
+const PLUG_KW = ['plug'];
 
 function isCableSku(sku) {
   if (!sku) return false;
   const s = sku.toLowerCase();
-  return CABLE_KW.some(k => s.includes(k));
+  if (PLUG_KW.some(k => s.includes(k))) return false; // has plug → always T48
+  return LL_KW.some(k => s.includes(k));
 }
 
 function inferPostage(sku, qty) {
-  return (isCableSku(sku) && qty === 1) ? 'll' : 't48';
+  return isCableSku(sku) ? 'll' : 't48';
 }
 
 // ---- Strip UTF-8 BOM if present ----
